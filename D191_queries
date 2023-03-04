@@ -1,0 +1,142 @@
+-- SECTION B --
+
+-- Truncate to Second Function --
+DROP FUNCTION IF EXISTS truncate_to_second(ts timestamp without time zone);
+CREATE OR REPLACE FUNCTION truncate_to_second(ts timestamp without time zone)
+RETURNS timestamp without time zone AS
+$$
+BEGIN
+	RETURN date_trunc('second', ts);
+END;
+$$
+LANGUAGE plpgsql;
+
+-- Format Currency Function --
+DROP FUNCTION IF EXISTS format_currency(dc decimal);
+CREATE OR REPLACE FUNCTION format_currency(dc decimal)
+RETURNS money as
+$$
+BEGIN
+	RETURN '$' || dc;
+END;
+$$
+LANGUAGE plpgsql;
+
+-- SECTION C --
+
+-- Create Detailed Table --
+DROP TABLE IF EXISTS detailed;
+CREATE TABLE detailed (
+	payment_id integer,
+	payment_timestamp timestamp without time zone,
+	payment_amount money,
+	film_title character varying (255),
+	film_genre character varying (25)
+);
+-- Create Summary Table --
+DROP TABLE IF EXISTS summary;
+CREATE TABLE summary (
+	film_title character varying (255),
+	total_revenue money,
+	film_genre character varying (25)
+);
+-- SECTION D --
+-- Populate Detailed Table --
+DELETE FROM detailed;
+INSERT INTO detailed (
+	payment_id, 
+	payment_timestamp, 
+	payment_amount, 
+	film_title, 
+	film_genre
+)
+SELECT
+	payment_id,
+	payment_date,
+	format_currency(amount),
+	title,
+	name
+FROM payment as p
+	INNER JOIN rental as r
+	ON p.rental_id = r.rental_id
+		INNER JOIN inventory as i
+		ON r.inventory_id = i.inventory_id
+			INNER JOIN film as f
+			on i.film_id = f.film_id
+				INNER JOIN film_category as fc
+				on f.film_id = fc.film_id
+					INNER JOIN category as c
+					on fc.category_id = c.category_id
+ORDER BY payment_date DESC;
+-- SECTION E --
+-- Create Function for Trigger --
+DROP FUNCTION IF EXISTS populate_summary();
+CREATE OR REPLACE FUNCTION populate_summary()
+RETURNS TRIGGER
+LANGUAGE plpgsql AS
+$$
+BEGIN
+	DELETE FROM summary;
+	INSERT INTO summary (
+		film_title,
+		total_revenue,
+		film_genre
+	)
+	SELECT 
+		film_title,
+		SUM(payment_amount),
+		film_genre
+	FROM detailed
+	GROUP BY film_title, film_genre
+	ORDER BY SUM(payment_amount) DESC;
+RETURN NEW;
+END;
+$$
+
+-- Create Trigger --
+DROP TRIGGER IF EXISTS update_summary ON detailed;
+CREATE TRIGGER update_summary
+AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE ON detailed
+EXECUTE FUNCTION populate_summary();
+
+-- SECTION F --
+-- Create Stored Procedure --
+DROP PROCEDURE IF EXISTS refresh_data();
+CREATE OR REPLACE PROCEDURE refresh_data()
+LANGUAGE plpgsql AS
+$$
+BEGIN
+	DELETE FROM detailed;
+	DELETE FROM summary;
+	INSERT INTO detailed (
+		payment_id, 
+		payment_timestamp, 
+		payment_amount, 
+		film_title, 
+		film_genre
+	)
+	SELECT
+		payment_id,
+		payment_date,
+		format_currency(amount),
+		title,
+		name
+	FROM payment as p
+		INNER JOIN rental as r
+		ON p.rental_id = r.rental_id
+			INNER JOIN inventory as i
+			ON r.inventory_id = i.inventory_id
+				INNER JOIN film as f
+				on i.film_id = f.film_id
+					INNER JOIN film_category as fc
+					on f.film_id = fc.film_id
+						INNER JOIN category as c
+						on fc.category_id = c.category_id
+	ORDER BY payment_date DESC;
+END;
+$$
+
+CALL refresh_data();
+
+SELECT * FROM detailed;
+SELECT * FROM summary;
